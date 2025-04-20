@@ -35,10 +35,10 @@
  * @param  xFlip            Flip the display horizontally
  * @param  yFlip            Flip the display vertically
  */
-void UC1701_SOLDERED::begin(uint8_t MOSI, uint8_t CLK, uint8_t CS, uint8_t CD, uint8_t RST, bool xFlip, bool yFlip)
+void UC1701_SOLDERED::begin(SPIClass& spi,uint32_t clockFrequency, uint8_t CS, uint8_t CD, uint8_t RST, bool xFlip, bool yFlip)
 {
-    pinMOSI = MOSI;
-    pinCLK = CLK;
+    spiInterface = &spi;
+    spiClock = clockFrequency;
     pinCS = CS;
     pinCD = CD;
     pinRST = RST;
@@ -54,8 +54,14 @@ void UC1701_SOLDERED::begin(uint8_t MOSI, uint8_t CLK, uint8_t CS, uint8_t CD, u
  */
 void UC1701_SOLDERED::sendCommand(uint8_t b)
 {
-    digitalWrite(pinCD, 0);
-    shiftOut(pinMOSI, pinCLK, MSBFIRST, b);
+    digitalWrite(pinCD, LOW);
+    // Start transmission
+    spiInterface->beginTransaction(SPISettings(spiClock, MSBFIRST, SPI_MODE3));
+    digitalWrite(pinCS, LOW);
+    spiInterface->transfer(b);
+    // End transmission
+    digitalWrite(pinCS, HIGH);
+    spiInterface->endTransaction();
 }
 
 /**
@@ -65,8 +71,14 @@ void UC1701_SOLDERED::sendCommand(uint8_t b)
  */
 void UC1701_SOLDERED::sendData(uint8_t b)
 {
-    digitalWrite(pinCD, 1);
-    shiftOut(pinMOSI, pinCLK, MSBFIRST, b);
+    digitalWrite(pinCD, HIGH);
+    // Start transmission
+    spiInterface->beginTransaction(SPISettings(spiClock, MSBFIRST, SPI_MODE3));
+    digitalWrite(pinCS, LOW);
+    spiInterface->transfer(b);
+    // End transmission
+    digitalWrite(pinCS, HIGH);
+    spiInterface->endTransaction();
 }
 
 /**
@@ -79,7 +91,7 @@ void UC1701_SOLDERED::sendData(uint8_t b)
  */
 void UC1701_SOLDERED::sendBuf(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1)
 {
-    int p, p0, p1, i, j, b, x;
+    int p, p0, p1, x;
 
     if (dontSendBuf > 0)
         return;
@@ -95,9 +107,6 @@ void UC1701_SOLDERED::sendBuf(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1)
 
         for (x = x0; x <= x1; x++)
             sendData(buf[x + p * screenWidth]);
-
-        sendCommand(0xA4); //     Set All-Pixel-ON
-        sendCommand(0xAF); //     Set Display Enable
     }
 }
 
@@ -143,7 +152,7 @@ void UC1701_SOLDERED::writePixel(int16_t x, int16_t y, uint16_t color)
 }
 
 /**
- * @brief                   Draws a pixel to the screen buffer and to the physical display
+ * @brief                   Draws a pixel to the screen buffer
  *
  * @param  x                X position
  * @param  y                Y position
@@ -152,17 +161,15 @@ void UC1701_SOLDERED::writePixel(int16_t x, int16_t y, uint16_t color)
 void UC1701_SOLDERED::drawPixel(int16_t x, int16_t y, uint16_t color)
 {
     writePixel(x, y, color);
-    // sendBuf(x, y, x, y);
 }
 
 /**
- * @brief                   Clears the screen buffer and display
+ * @brief                   Clears the screen buffer
  */
 void UC1701_SOLDERED::clearDisplay()
 {
     dontSendBuf = 0;
     memset(buf, 0, sizeof(buf));
-    // sendBuf(0, 0, screenHMax, screenVMax);
 }
 
 /**
@@ -211,27 +218,26 @@ void UC1701_SOLDERED::setInverted(bool inv)
  */
 void UC1701_SOLDERED::init()
 {
-    pinMode(pinMOSI, OUTPUT);
-    pinMode(pinCLK, OUTPUT);
+    if (!spiInterface) {
+        Serial.println("Error: SPI interface not set!");
+        return;
+    }
+
     pinMode(pinCS, OUTPUT);
     pinMode(pinCD, OUTPUT);
 
-    digitalWrite(pinCS, 0);
-
+    digitalWrite(pinCS, HIGH);
+    digitalWrite(pinCD, LOW);
     enabled = true;
 
-    digitalWrite(pinCS, 0);
-    digitalWrite(pinCD, 0);
     if (pinRST < 255)
     {
         pinMode(pinRST, OUTPUT);
-        digitalWrite(pinRST, 0);
+        digitalWrite(pinRST, LOW);
         delay(1);
-        digitalWrite(pinRST, 1);
+        digitalWrite(pinRST, HIGH);
         delay(1);
     }
-    digitalWrite(pinCS, 1);
-    digitalWrite(pinCS, 0);
 
     sendCommand(0xE2); // System Reset
     delay(10);
@@ -240,7 +246,7 @@ void UC1701_SOLDERED::init()
     if (curxFlip)
     {
         sendCommand(0xA1); // Set SEG Direction - on
-        xOffset = 4;
+        xOffset = 0;
     }
     else
     {
@@ -255,17 +261,18 @@ void UC1701_SOLDERED::init()
     {
         sendCommand(0xC0); // Set COM Direction - off
     }
+    sendCommand(0xA4); // Set All-Pixel - off
     sendCommand(0xA6); // Set Inverse Display - off
     sendCommand(0xA2); // Set LCD Bias Ratio
     sendCommand(0x2F); // Set Power Control - on
     delay(10);
     sendCommand(0x27); // Set VLCD Resistor Ratio
     sendCommand(0x81); // Set Electronic Volume
-    sendCommand(0x0E); // value
+    sendCommand(0x06); // value
     sendCommand(0xFA); // Set Adv. Program Control
     sendCommand(0x90); // value
-    sendCommand(0xAE); // Set Display Enable - on
-    sendCommand(0xA5); // Set All-Pixel-ON
+    sendCommand(0xA4); // Set All-Pixel - off
+    sendCommand(0xAF); // Set Display Enable - on
 
     clearDisplay();
 }
@@ -284,7 +291,7 @@ void UC1701_SOLDERED::setEnabled(bool en)
         sendCommand(0x28); // Set Power Control - off
         delay(10);
         sendCommand(0xAE); // Set Display Enable - off
-                           //    sendCommand(0xA5);   // All Pixel ON
+
         if (pinRST < 255)
             digitalWrite(pinRST, 0);
         digitalWrite(pinCS, 0);
